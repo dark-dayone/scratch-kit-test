@@ -1,0 +1,218 @@
+# CI pipeline: stage 5 (automated gates) of the Agentic Software Delivery Workflow.
+# Save as .github/workflows/ci.yml in each project.
+#
+# Layout assumed (rename the paths below if yours differs):
+#   api/     FastAPI backend   (requirements.txt + requirements-dev.txt)
+#   web/     Next.js frontend  (package.json defines: lint, typecheck, test, build)
+#   mobile/  Flutter app       (pubspec.yaml)
+# Layers that do not exist in a project are skipped automatically.
+#
+# The ONE required status check on main is "CI gate" (see the ruleset in the
+# master document). It fails if any layer fails and passes if every layer
+# passed or was legitimately skipped.
+#
+# requirements-dev.txt must include: ruff, mypy, bandit, pip-audit, pytest.
+#
+# Not covered yet (known gaps): browser end-to-end tests, mutation testing,
+# deeper static analysis, and a check that new packages are real (a human
+# approves every new dependency at the plan stage instead).
+#
+# Vulnerability scanning: the "vulnerabilities" job runs OSV-Scanner over every
+# lockfile in the repo (Python, npm, Dart). Commit pubspec.lock and
+# package-lock.json so the scan sees the exact versions you ship. Findings
+# are known issues only; they do not prove your own code is safe.
+#
+# Actions are pinned to major-version tags. Pinning to commit SHAs is stronger
+# supply-chain protection and is a follow-up once the SHAs are verified.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  detect:
+    name: Detect layers
+    runs-on: ubuntu-latest
+    outputs:
+      api: ${{ steps.layers.outputs.api }}
+      web: ${{ steps.layers.outputs.web }}
+      mobile: ${{ steps.layers.outputs.mobile }}
+    steps:
+      - uses: actions/checkout@v6
+      - id: layers
+        run: |
+          check() {
+            if [ -f "$2" ]; then echo "$1=true" >> "$GITHUB_OUTPUT"; else echo "$1=false" >> "$GITHUB_OUTPUT"; fi
+          }
+          check api api/requirements.txt
+          check web web/package.json
+          check mobile mobile/pubspec.yaml
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      # The open-source gitleaks CLI is used instead of gitleaks-action, because
+      # the action needs a license key for organization accounts.
+      - name: Install gitleaks (pinned, checksum-verified)
+        env:
+          GITLEAKS_VERSION: "8.30.1" # confirm this is current when you adopt the file
+        run: |
+          set -euo pipefail
+          base="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
+          file="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSfL -o "${file}" "${base}/${file}"
+          curl -sSfL -o checksums.txt "${base}/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          grep -E " \*?${file}\$" checksums.txt | sha256sum -c -
+          tar -xzf "${file}" gitleaks
+      - name: Scan git history
+        run: ./gitleaks git --redact --no-banner --verbose
+
+  api:
+    name: API (Python)
+    needs: detect
+    if: needs.detect.outputs.api == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: api
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://test:test@localhost:5432/test
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13" # match the version the project actually uses
+          cache: pip
+          cache-dependency-path: |
+            api/requirements.txt
+            api/requirements-dev.txt
+      - run: pip install -r requirements.txt -r requirements-dev.txt
+      - name: Lint
+        run: ruff check .
+      - name: Format check
+        run: ruff format --check .
+      - name: Type check
+        run: mypy .
+      - name: Static security analysis
+        run: bandit -r . -ll --exclude ./tests
+      - name: Dependency audit
+        run: pip-audit -r requirements.txt
+      - name: Tests
+        run: pytest
+
+  web:
+    name: Web (Next.js)
+    needs: detect
+    if: needs.detect.outputs.web == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - name: Lint
+        run: npm run lint
+      - name: Type check
+        run: npm run typecheck
+      - name: Tests
+        run: npm test
+      - name: Dependency audit
+        run: npm audit --audit-level=high
+      - name: Build
+        run: npm run build
+
+  mobile:
+    name: Mobile (Flutter)
+    needs: detect
+    if: needs.detect.outputs.mobile == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v6
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable # for reproducible builds, pin an exact version later
+          cache: true
+      - run: flutter pub get
+      - name: Format check
+        run: dart format --output=none --set-exit-if-changed .
+      - name: Analyze
+        run: flutter analyze
+      - name: Tests
+        run: flutter test
+
+  vulnerabilities:
+    name: Dependency vulnerability scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      # OSV-Scanner is Google's free scanner. It reads requirements.txt,
+      # package-lock.json and pubspec.lock in one recursive scan. The binary is
+      # downloaded from the official release and checked against the published
+      # checksums. The scan exits non-zero if known vulnerabilities are found.
+      - name: Install OSV-Scanner (pinned, checksum-verified)
+        env:
+          OSV_SCANNER_VERSION: "2.6.0" # confirm this is current when you adopt the file
+        run: |
+          set -euo pipefail
+          base="https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}"
+          curl -sSfL -o osv-scanner_linux_amd64 "${base}/osv-scanner_linux_amd64"
+          curl -sSfL -o osv-scanner_SHA256SUMS "${base}/osv-scanner_SHA256SUMS"
+          grep -E " \*?osv-scanner_linux_amd64\$" osv-scanner_SHA256SUMS | sha256sum -c -
+          chmod +x osv-scanner_linux_amd64
+      - name: Scan lockfiles
+        run: ./osv-scanner_linux_amd64 scan source -r .
+
+  ci-gate:
+    name: CI gate
+    if: always()
+    needs: [detect, secrets, api, web, mobile, vulnerabilities]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every job to pass or be skipped
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "Job results: ${RESULTS}"
+          for r in ${RESULTS}; do
+            if [ "$r" != "success" ] && [ "$r" != "skipped" ]; then
+              echo "A job did not succeed, so the gate fails."
+              exit 1
+            fi
+          done
