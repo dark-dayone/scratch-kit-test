@@ -27,8 +27,12 @@
 
 name: CI
 
+# Minutes: pull requests run CI only when they are ready for review. Agents open
+# DRAFT pull requests, and the human marks them ready. A draft pull request cannot
+# be merged anyway. Marking it ready triggers the full run (ready_for_review).
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: [main]
 
@@ -42,13 +46,15 @@ concurrency:
 jobs:
   detect:
     name: Detect layers
+    if: github.event.pull_request.draft != true
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       api: ${{ steps.layers.outputs.api }}
       web: ${{ steps.layers.outputs.web }}
       mobile: ${{ steps.layers.outputs.mobile }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - id: layers
         run: |
           check() {
@@ -60,9 +66,11 @@ jobs:
 
   secrets:
     name: Secret scan
+    if: github.event.pull_request.draft != true
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       # The open-source gitleaks CLI is used instead of gitleaks-action, because
@@ -99,6 +107,7 @@ jobs:
     needs: detect
     if: needs.detect.outputs.api == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: api
@@ -119,8 +128,8 @@ jobs:
     env:
       DATABASE_URL: postgresql://test:test@localhost:5432/test
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.13" # match the version the project actually uses
           cache: pip
@@ -146,12 +155,13 @@ jobs:
     needs: detect
     if: needs.detect.outputs.web == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: web
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
@@ -173,11 +183,12 @@ jobs:
     needs: detect
     if: needs.detect.outputs.mobile == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     defaults:
       run:
         working-directory: mobile
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: subosito/flutter-action@v2
         with:
           channel: stable # for reproducible builds, pin an exact version later
@@ -192,9 +203,11 @@ jobs:
 
   vulnerabilities:
     name: Dependency vulnerability scan
+    if: github.event.pull_request.draft != true
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       # OSV-Scanner is Google's free scanner. It reads requirements.txt,
       # package-lock.json and pubspec.lock in one recursive scan. The binary is
       # downloaded from the official release and checked against the published
@@ -214,15 +227,22 @@ jobs:
 
   ci-gate:
     name: CI gate
-    if: always()
+    if: ${{ always() && github.event.pull_request.draft != true }}
     needs: [detect, secrets, api, web, mobile, vulnerabilities]
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Require every job to pass or be skipped
         env:
           RESULTS: ${{ join(needs.*.result, ' ') }}
+          DETECT: ${{ needs.detect.result }}
         run: |
           echo "Job results: ${RESULTS}"
+          # Layer detection must have run, so an all-skipped run can never pass.
+          if [ "${DETECT}" != "success" ]; then
+            echo "Layer detection did not run, so the gate fails."
+            exit 1
+          fi
           for r in ${RESULTS}; do
             if [ "$r" != "success" ] && [ "$r" != "skipped" ]; then
               echo "A job did not succeed, so the gate fails."
