@@ -7,3 +7,4 @@ Ecosystem is one of `python`, `npm` or `pub`. Python lists the packages in `api/
 | Ecosystem | Package | Version | Date approved | Plan or reason |
 | --- | --- | --- | --- | --- |
 | python | fastapi | 0.162.0 | 2026-11-03 | baseline for scratch test |
+| python | httpx | 0.28 | 2026-11-03 | test |
