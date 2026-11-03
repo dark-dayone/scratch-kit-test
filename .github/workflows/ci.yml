@@ -48,7 +48,7 @@ jobs:
       web: ${{ steps.layers.outputs.web }}
       mobile: ${{ steps.layers.outputs.mobile }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - id: layers
         run: |
           check() {
@@ -62,7 +62,7 @@ jobs:
     name: Secret scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       # The open-source gitleaks CLI is used instead of gitleaks-action, because
@@ -106,7 +106,7 @@ jobs:
     env:
       DATABASE_URL: postgresql://test:test@localhost:5432/test
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13" # match the version the project actually uses
@@ -137,7 +137,7 @@ jobs:
       run:
         working-directory: web
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v6
         with:
           node-version: 24
@@ -164,7 +164,7 @@ jobs:
       run:
         working-directory: mobile
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: subosito/flutter-action@v2
         with:
           channel: stable # for reproducible builds, pin an exact version later
@@ -181,7 +181,7 @@ jobs:
     name: Dependency vulnerability scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       # OSV-Scanner is Google's free scanner. It reads requirements.txt,
       # package-lock.json and pubspec.lock in one recursive scan. The binary is
       # downloaded from the official release and checked against the published
