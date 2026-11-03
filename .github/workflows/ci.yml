@@ -78,8 +78,21 @@ jobs:
           curl -sSfL -o checksums.txt "${base}/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
           grep -E " \*?${file}\$" checksums.txt | sha256sum -c -
           tar -xzf "${file}" gitleaks
+      # By default gitleaks scans every branch in the repository, so a secret on
+      # one unmerged branch would fail every other pull request. Pull requests
+      # scan only their own commits; pushes scan only the history of the
+      # checked-out branch (main).
       - name: Scan git history
-        run: ./gitleaks git --redact --no-banner --verbose
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          if [ "${EVENT}" = "pull_request" ]; then
+            ./gitleaks git --redact --no-banner --verbose --log-opts="${BASE_SHA}..HEAD"
+          else
+            ./gitleaks git --redact --no-banner --verbose --log-opts="HEAD"
+          fi
 
   api:
     name: API (Python)
